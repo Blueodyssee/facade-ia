@@ -4,7 +4,7 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    const { image, colorName, colorHex, colorPrompt } = await req.json();
+    const { image, colorName, colorHex, colorPrompt, referenceImage } = await req.json();
 
     if (!image || !colorName) {
       return NextResponse.json({ error: 'Missing image or color data' }, { status: 400 });
@@ -15,34 +15,55 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'OPENROUTER_API_KEY not configured' }, { status: 500 });
     }
 
-    const prompt = `Change ONLY the exterior wall/facade color of this house to ${colorName} — ${colorPrompt} (target color hex ${colorHex}). The wall paint color must become exactly this color. Keep absolutely everything else completely identical and unchanged: the exact same architecture, windows, doors, shutters, roof, chimney, vegetation, sky, ground, shadows, highlights, lighting direction, texture, materials and details. Photorealistic result, maintain the exact same perspective, framing and composition. Do not add or remove any object.`;
+    const keepRule = `Keep absolutely everything else completely identical and unchanged: the exact same architecture, windows, doors, shutters, roof, chimney, vegetation, sky, ground, shadows, highlights, lighting direction, texture, materials and details. Photorealistic result, maintain the exact same perspective, framing and composition. Do not add or remove any object.`;
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://facade-ia.vercel.app',
-        'X-Title': 'FaçadeIA',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash-image',
-        modalities: ['image', 'text'],
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'image_url', image_url: { url: image } },
-              { type: 'text', text: prompt },
-            ],
-          },
-        ],
-      }),
-    });
+    // Le contenu envoyé : la photo de façade, puis (optionnel) la teinte de
+    // référence, puis l'instruction texte.
+    const content: Array<Record<string, unknown>> = [
+      { type: 'image_url', image_url: { url: image } },
+    ];
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`OpenRouter error: ${errText}`);
+    let prompt: string;
+    if (referenceImage) {
+      // Teinte personnalisée : on fournit l'échantillon comme 2e image.
+      content.push({ type: 'image_url', image_url: { url: referenceImage } });
+      prompt = `The FIRST image is a house. The SECOND image is a flat paint colour swatch. Repaint ONLY the exterior walls/facade of the house so they are exactly the solid colour of the swatch in the second image (${colorPrompt}, approximately hex ${colorHex}). The new wall colour must clearly and visibly match that swatch. ${keepRule}`;
+    } else {
+      prompt = `Change ONLY the exterior wall/facade color of this house to ${colorName} — ${colorPrompt} (target color hex ${colorHex}). The wall paint color must clearly and visibly become this color. ${keepRule}`;
+    }
+    content.push({ type: 'text', text: prompt });
+
+    // Modèles d'édition d'image, par ordre de préférence (qualité de recoloriage).
+    // gemini-3-pro recolorise réellement ; 3.1-flash sert de repli si indispo.
+    const models = [
+      'google/gemini-3-pro-image-preview',
+      'google/gemini-3.1-flash-image-preview',
+    ];
+
+    let res: Response | null = null;
+    let lastErr = '';
+    for (const model of models) {
+      res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://facade-ia.vercel.app',
+          'X-Title': 'FaçadeIA',
+        },
+        body: JSON.stringify({
+          model,
+          modalities: ['image', 'text'],
+          messages: [{ role: 'user', content }],
+        }),
+      });
+      if (res.ok) break;
+      lastErr = await res.text();
+      res = null;
+    }
+
+    if (!res) {
+      throw new Error(`OpenRouter error: ${lastErr}`);
     }
 
     const data = await res.json();
