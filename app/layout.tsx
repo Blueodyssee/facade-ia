@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'FaçadeIA — Visualisez votre façade en couleur',
+  title: 'Gooweb Color — Visualisez votre façade en couleur',
   description: 'Simulez la couleur de votre façade en quelques secondes grâce à l\'IA',
 };
 

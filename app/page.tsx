@@ -76,14 +76,6 @@ function DownloadIcon() {
   );
 }
 
-function MailIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-    </svg>
-  );
-}
-
 function PdfIcon() {
   return (
     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -159,88 +151,6 @@ function ColorCard({ color, onSelect }: { color: Color; onSelect: () => void }) 
   );
 }
 
-// ─── Email Modal ──────────────────────────────────────────────────────────────
-
-function EmailModal({
-  onClose,
-  onSend,
-  colorName,
-}: {
-  onClose: () => void;
-  onSend: (email: string) => void;
-  colorName: string;
-}) {
-  const [email, setEmail] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-
-  const handleSend = async () => {
-    if (!email || !email.includes('@')) return;
-    setSending(true);
-    await onSend(email);
-    setSending(false);
-    setSent(true);
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 animate-slide-up">
-        {sent ? (
-          <div className="text-center py-4 space-y-4">
-            <div className="w-16 h-16 bg-green-50 rounded-full flex items-center justify-center mx-auto">
-              <CheckIcon />
-            </div>
-            <div>
-              <p className="text-lg font-semibold text-gray-900">Email envoyé !</p>
-              <p className="text-sm text-gray-500 mt-1">Votre simulation a été envoyée à <strong>{email}</strong></p>
-            </div>
-            <button
-              onClick={onClose}
-              className="w-full py-3 bg-gray-900 text-white rounded-xl font-medium hover:bg-gray-800 transition-colors"
-            >
-              Fermer
-            </button>
-          </div>
-        ) : (
-          <>
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-lg font-semibold text-gray-900">Envoyer par email</h2>
-              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors text-xl leading-none">×</button>
-            </div>
-            <p className="text-sm text-gray-500 mb-5">
-              Recevez votre simulation de façade <strong>{colorName}</strong> directement par email.
-            </p>
-            <input
-              type="email"
-              placeholder="votre@email.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-gray-900 transition-colors mb-4"
-              autoFocus
-            />
-            <div className="flex gap-3">
-              <button
-                onClick={onClose}
-                className="flex-1 py-3 border border-gray-200 text-gray-600 rounded-xl font-medium hover:bg-gray-50 transition-colors text-sm"
-              >
-                Annuler
-              </button>
-              <button
-                onClick={handleSend}
-                disabled={!email.includes('@') || sending}
-                className="flex-1 py-3 bg-gray-900 text-white rounded-xl font-medium hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm flex items-center justify-center gap-2"
-              >
-                {sending ? <><SpinnerIcon /> Envoi…</> : 'Envoyer'}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -253,10 +163,19 @@ export default function Home() {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [dragFacade, setDragFacade] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
+  const [remaining, setRemaining] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Compteur de simulations (chargé au démarrage) ──────────────────────────
+
+  useEffect(() => {
+    fetch('/api/counter')
+      .then((r) => r.json())
+      .then((d) => setRemaining(d.remaining))
+      .catch((e) => console.error('Counter load error:', e));
+  }, []);
 
   // ── Photo de façade : lecture + analyse directe ───────────────────────────
 
@@ -298,30 +217,6 @@ export default function Home() {
       setError('Une erreur est survenue lors de l\'analyse. Vérifiez votre clé OPENROUTER_API_KEY.');
       setStep('upload');
       setUploadedImage(null);
-    }
-  };
-
-  // ── Coller depuis le presse-papier (bouton « Coller ») ────────────────────
-
-  const pasteFacade = async () => {
-    try {
-      if (!navigator.clipboard || !navigator.clipboard.read) {
-        setError("Le collage n'est pas disponible ici. Utilisez « Choisir ».");
-        return;
-      }
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        const type = item.types.find((t) => t.startsWith('image/'));
-        if (type) {
-          const blob = await item.getType(type);
-          handleFacadeFile(new File([blob], 'presse-papier.png', { type }));
-          return;
-        }
-      }
-      setError("Aucune image dans le presse-papier. Copiez d'abord une image.");
-    } catch (e) {
-      console.error('Clipboard read error:', e);
-      setError("Impossible de lire le presse-papier.");
     }
   };
 
@@ -382,39 +277,61 @@ export default function Home() {
       // On utilise l'image du modèle telle quelle (process d'hier qui marchait).
       setResultImage(data.resultUrl);
       setStep('result');
+      return true;
     } catch (err) {
       clearInterval(interval);
       console.error(err);
       setError('Erreur lors du recoloriage. Vérifiez votre clé OPENROUTER_API_KEY.');
       setStep(onErrorStep);
       setSelectedColor(null);
+      return false;
     }
   };
 
-  const handleColorSelect = (color: Color) => {
+  const handleColorSelect = async (color: Color) => {
     if (!uploadedImage) return;
-    runRecolor(color, uploadedImage, 'colors');
-  };
 
-  // ── Collage global (Ctrl+V) sur l'écran d'upload ──────────────────────────
+    // Compteur : on bloque s'il ne reste plus de simulations.
+    if (remaining !== null && remaining <= 0) {
+      setError('Plus de simulations disponibles pour le moment.');
+      return;
+    }
 
-  useEffect(() => {
-    if (step !== 'upload') return;
-    const onPaste = (e: ClipboardEvent) => {
-      const items = e.clipboardData?.items;
-      if (!items) return;
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) {
-          const file = items[i].getAsFile();
-          if (file) handleFacadeFile(file);
-          break;
-        }
+    // On réserve une simulation (décrément global).
+    try {
+      const r = await fetch('/api/counter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'decrement' }),
+      });
+      const d = await r.json();
+      setRemaining(d.remaining);
+      if (d.blocked) {
+        setError('Plus de simulations disponibles pour le moment.');
+        return;
       }
-    };
-    document.addEventListener('paste', onPaste);
-    return () => document.removeEventListener('paste', onPaste);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+    } catch (e) {
+      console.error('Counter decrement error:', e);
+      // En cas d'erreur du compteur, on laisse passer la simulation.
+    }
+
+    const ok = await runRecolor(color, uploadedImage, 'colors');
+
+    // Si la colorisation a échoué, on rembourse la simulation réservée.
+    if (!ok) {
+      try {
+        const r = await fetch('/api/counter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'refund' }),
+        });
+        const d = await r.json();
+        setRemaining(d.remaining);
+      } catch (e) {
+        console.error('Counter refund error:', e);
+      }
+    }
+  };
 
   // ── Génération du watermark dès que le résultat est prêt ───────────────────
 
@@ -458,28 +375,6 @@ export default function Home() {
     }
   };
 
-  // ── Email ─────────────────────────────────────────────────────────────────
-
-  const handleEmailSend = async (email: string) => {
-    try {
-      const res = await fetch('/api/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: email,
-          colorName: selectedColor?.fullName,
-          resultImageUrl: watermarkedImage || resultImage,
-        }),
-      });
-      const data = await res.json();
-      if (data.error === 'EMAIL_NOT_CONFIGURED') {
-        alert('Service email non configuré. Téléchargez l\'image et partagez-la manuellement.');
-      }
-    } catch (err) {
-      console.error('Email error:', err);
-    }
-  };
-
   // ── Reset ─────────────────────────────────────────────────────────────────
 
   const handleReset = () => {
@@ -501,22 +396,37 @@ export default function Home() {
       <header className="sticky top-0 z-40 bg-[#F7F6F3]/80 backdrop-blur-md border-b border-gray-200/60">
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gray-900 flex items-center justify-center">
-              <span className="text-[#F0EEE8] text-xs font-bold">F</span>
-            </div>
-            <span className="font-semibold text-gray-900 tracking-tight">FaçadeIA</span>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo-gooweb.png" alt="Gooweb" className="h-7 w-auto" />
+            <span className="font-semibold text-gray-900 tracking-tight">Gooweb Color</span>
           </div>
-          {step !== 'upload' && (
-            <button
-              onClick={handleReset}
-              className="text-sm text-gray-500 hover:text-gray-900 transition-colors flex items-center gap-1.5"
-            >
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              Recommencer
-            </button>
-          )}
+          <div className="flex items-center gap-4">
+            {remaining !== null && (
+              <span
+                className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                  remaining <= 0
+                    ? 'bg-red-50 text-red-600'
+                    : remaining <= 20
+                    ? 'bg-amber-50 text-amber-600'
+                    : 'bg-gray-100 text-gray-500'
+                }`}
+                title="Simulations restantes"
+              >
+                {remaining} simulation{remaining > 1 ? 's' : ''}
+              </span>
+            )}
+            {step !== 'upload' && (
+              <button
+                onClick={handleReset}
+                className="text-sm text-gray-500 hover:text-gray-900 transition-colors flex items-center gap-1.5"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Recommencer
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -573,22 +483,14 @@ export default function Home() {
                 <p className="font-semibold text-gray-900 text-lg">
                   {dragFacade ? 'Déposez votre photo ici' : 'Uploader une photo de façade'}
                 </p>
-                <p className="text-gray-400 text-sm">Glissez-déposez, choisissez ou collez • JPG, PNG, WebP (max 20 Mo)</p>
+                <p className="text-gray-400 text-sm">Glissez-déposez ou cliquez pour choisir • JPG, PNG, WebP (max 20 Mo)</p>
               </div>
-              <div className="flex gap-2 pt-1">
-                <button
-                  className="bg-gray-900 text-white px-6 py-2.5 rounded-full text-sm font-medium hover:bg-gray-700 transition-colors shadow-sm"
-                  onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                >
-                  Choisir une photo
-                </button>
-                <button
-                  className="bg-white border border-gray-200 text-gray-600 px-6 py-2.5 rounded-full text-sm font-medium hover:bg-gray-50 transition-colors"
-                  onClick={(e) => { e.stopPropagation(); pasteFacade(); }}
-                >
-                  Coller
-                </button>
-              </div>
+              <button
+                className="mt-1 bg-gray-900 text-white px-6 py-2.5 rounded-full text-sm font-medium hover:bg-gray-700 transition-colors shadow-sm"
+                onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+              >
+                Choisir une photo
+              </button>
             </div>
           </div>
         )}
@@ -776,7 +678,7 @@ export default function Home() {
             </div>
 
             {/* Action buttons */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 onClick={handleDownload}
                 className="flex items-center justify-center gap-2 bg-gray-900 text-white py-3.5 rounded-xl font-medium hover:bg-gray-800 transition-colors shadow-sm"
@@ -792,13 +694,6 @@ export default function Home() {
                 {pdfLoading ? <SpinnerIcon /> : <PdfIcon />}
                 {pdfLoading ? 'Génération…' : 'Télécharger le PDF'}
               </button>
-              <button
-                onClick={() => setEmailModalOpen(true)}
-                className="flex items-center justify-center gap-2 border border-gray-200 bg-white text-gray-700 py-3.5 rounded-xl font-medium hover:bg-gray-50 transition-colors"
-              >
-                <MailIcon />
-                Envoyer par email
-              </button>
             </div>
 
             {/* Try other color — only when preset colors were proposed */}
@@ -811,8 +706,11 @@ export default function Home() {
                     setWatermarkedImage(null);
                     setSelectedColor(null);
                   }}
-                  className="text-sm text-gray-500 hover:text-gray-900 underline-offset-2 hover:underline transition-colors"
+                  className="inline-flex items-center gap-2 text-base font-semibold text-blue-600 hover:text-blue-700 hover:underline underline-offset-4 transition-colors"
                 >
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
                   Essayer une autre teinte
                 </button>
               </div>
@@ -824,18 +722,9 @@ export default function Home() {
       {/* Footer */}
       <footer className="border-t border-gray-200/60 py-6 text-center">
         <p className="text-xs text-gray-400">
-          FaçadeIA • Simulation indicative générée par IA • Les couleurs peuvent varier selon votre écran
+          Gooweb Color • Simulation indicative générée par IA • Les couleurs peuvent varier selon votre écran
         </p>
       </footer>
-
-      {/* Email Modal */}
-      {emailModalOpen && selectedColor && (
-        <EmailModal
-          onClose={() => setEmailModalOpen(false)}
-          onSend={handleEmailSend}
-          colorName={selectedColor.fullName}
-        />
-      )}
     </div>
   );
 }
