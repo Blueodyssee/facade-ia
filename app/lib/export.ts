@@ -32,6 +32,31 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+// ─── Letterbox : transforme une image en carré (bandes neutres) ─────────────────
+
+/**
+ * Place l'image au centre d'un canevas CARRÉ (côté = plus grande dimension),
+ * en remplissant le reste de gris neutre. Comme l'entrée envoyée au modèle est
+ * déjà carrée, celui-ci ne rogne plus les côtés : le cadrage est préservé.
+ * On retire ensuite les bandes avec matchAspect().
+ */
+export async function padToSquare(imageDataUrl: string): Promise<string> {
+  const img = await loadImage(imageDataUrl);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const size = Math.max(w, h);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, size, size);
+  ctx.drawImage(img, Math.round((size - w) / 2), Math.round((size - h) / 2), w, h);
+
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
 // ─── Recadrage au ratio de la photo d'origine ───────────────────────────────────
 
 /**
@@ -45,28 +70,31 @@ export async function matchAspect(resultUrl: string, originalUrl: string): Promi
     loadImage(originalUrl),
   ]);
 
-  const targetAspect = original.naturalWidth / original.naturalHeight;
+  const ow = original.naturalWidth;
+  const oh = original.naturalHeight;
+  const targetAspect = ow / oh;
   const rw = result.naturalWidth;
   const rh = result.naturalHeight;
   const currentAspect = rw / rh;
 
+  // Zone source à conserver (recadrage centré au bon ratio)
   let cropW = rw;
   let cropH = rh;
   if (currentAspect > targetAspect) {
-    // résultat trop large → on rogne les côtés
-    cropW = Math.round(rh * targetAspect);
+    cropW = Math.round(rh * targetAspect); // trop large → on rogne les côtés
   } else {
-    // résultat trop haut → on rogne en haut/bas
-    cropH = Math.round(rw / targetAspect);
+    cropH = Math.round(rw / targetAspect); // trop haut → on rogne en haut/bas
   }
   const sx = Math.round((rw - cropW) / 2);
   const sy = Math.round((rh - cropH) / 2);
 
+  // Sortie aux dimensions EXACTES de l'original → proportions strictement
+  // identiques entre avant et après (pixel pour pixel).
   const canvas = document.createElement('canvas');
-  canvas.width = cropW;
-  canvas.height = cropH;
+  canvas.width = ow;
+  canvas.height = oh;
   const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(result, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+  ctx.drawImage(result, sx, sy, cropW, cropH, 0, 0, ow, oh);
 
   return canvas.toDataURL('image/jpeg', 0.92);
 }

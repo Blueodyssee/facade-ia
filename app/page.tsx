@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { createWatermarkedImage, generateFacadePDF, fileTimestamp, extractDominantColor, hexToColorName, makeSolidSwatch, matchAspect } from './lib/export';
+import { createWatermarkedImage, generateFacadePDF, fileTimestamp } from './lib/export';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -246,25 +246,21 @@ function EmailModal({
 export default function Home() {
   const [step, setStep] = useState<AppStep>('upload');
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const [userColorImage, setUserColorImage] = useState<string | null>(null);
-  const [userColor, setUserColor] = useState<Color | null>(null);
   const [colors, setColors] = useState<Color[]>([]);
   const [selectedColor, setSelectedColor] = useState<Color | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [watermarkedImage, setWatermarkedImage] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [dragFacade, setDragFacade] = useState(false);
-  const [dragColor, setDragColor] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const colorInputRef = useRef<HTMLInputElement>(null);
 
-  // ── Lecture de la photo de façade (sans déclencher d'action) ──────────────
+  // ── Photo de façade : lecture + analyse directe ───────────────────────────
 
-  const readFacadeFile = async (file: File) => {
+  const handleFacadeFile = async (file: File) => {
     if (!file.type.startsWith('image/')) {
       setError('La photo de façade doit être une image (JPG, PNG, WebP).');
       return;
@@ -278,128 +274,64 @@ export default function Home() {
       const raw = await readFileAsDataUrl(file);
       const compressed = await compressImage(raw);
       setUploadedImage(compressed);
-    } catch (err) {
-      console.error(err);
-      setError('Impossible de lire cette photo. Essayez une autre image.');
-    }
-  };
+      setStep('analyzing');
+      setLoadingMessage('Analyse de votre façade en cours…');
 
-  const clearFacade = () => setUploadedImage(null);
-
-  // ── Lecture de la teinte personnelle (sans déclencher d'action) ───────────
-
-  const handleColorFile = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setError('La teinte doit être une image (JPG, PNG, WebP).');
-      return;
-    }
-    setError(null);
-    try {
-      const raw = await readFileAsDataUrl(file);
-      const compressed = await compressImage(raw, 400, 0.9);
-      const hex = await extractDominantColor(compressed);
-      setUserColorImage(compressed);
-      setUserColor({
-        id: 'USER',
-        name: 'Votre teinte',
-        fullName: 'Votre teinte personnalisée',
-        hex,
-        ncs: '',
-        lrv: '',
-        recolorPrompt: `a ${hexToColorName(hex)} color`,
-        reason: 'Teinte que vous avez fournie.',
-      });
-    } catch (err) {
-      console.error(err);
-      setError('Impossible de lire cette teinte. Essayez une autre image.');
-    }
-  };
-
-  const clearUserColor = () => {
-    setUserColorImage(null);
-    setUserColor(null);
-  };
-
-  // ── Coller depuis le presse-papier (bouton « Coller ») ────────────────────
-
-  const readClipboardImage = async (): Promise<File | null> => {
-    try {
-      if (!navigator.clipboard || !navigator.clipboard.read) return null;
-      const items = await navigator.clipboard.read();
-      for (const item of items) {
-        const type = item.types.find((t) => t.startsWith('image/'));
-        if (type) {
-          const blob = await item.getType(type);
-          return new File([blob], 'presse-papier.png', { type });
-        }
-      }
-    } catch (e) {
-      console.error('Clipboard read error:', e);
-    }
-    return null;
-  };
-
-  const pasteInto = async (target: 'facade' | 'color') => {
-    const file = await readClipboardImage();
-    if (!file) {
-      setError("Aucune image dans le presse-papier. Copiez d'abord une image (ou utilisez « Choisir »).");
-      return;
-    }
-    if (target === 'facade') readFacadeFile(file);
-    else handleColorFile(file);
-  };
-
-  // ── Actions de l'écran de préparation ─────────────────────────────────────
-
-  const proceedWithColor = () => {
-    if (!uploadedImage || !userColor) return;
-    runRecolor(userColor, uploadedImage, 'upload', userColorImage);
-  };
-
-  const proceedWithPresets = async () => {
-    if (!uploadedImage) return;
-    setError(null);
-    setStep('analyzing');
-    setLoadingMessage('Analyse de votre façade en cours…');
-    try {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: uploadedImage }),
+        body: JSON.stringify({ image: compressed }),
       });
-
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
 
       if (!data.isValidFacade) {
         setError("Cette image ne semble pas être une façade de bâtiment. Veuillez en uploader une autre.");
         setStep('upload');
+        setUploadedImage(null);
         return;
       }
-
       setColors(data.colors);
       setStep('colors');
     } catch (err) {
       console.error(err);
       setError('Une erreur est survenue lors de l\'analyse. Vérifiez votre clé OPENROUTER_API_KEY.');
       setStep('upload');
+      setUploadedImage(null);
     }
   };
 
-  // ── Drag & drop (façade + teinte) ─────────────────────────────────────────
+  // ── Coller depuis le presse-papier (bouton « Coller ») ────────────────────
+
+  const pasteFacade = async () => {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.read) {
+        setError("Le collage n'est pas disponible ici. Utilisez « Choisir ».");
+        return;
+      }
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'));
+        if (type) {
+          const blob = await item.getType(type);
+          handleFacadeFile(new File([blob], 'presse-papier.png', { type }));
+          return;
+        }
+      }
+      setError("Aucune image dans le presse-papier. Copiez d'abord une image.");
+    } catch (e) {
+      console.error('Clipboard read error:', e);
+      setError("Impossible de lire le presse-papier.");
+    }
+  };
+
+  // ── Drag & drop (façade) ───────────────────────────────────────────────────
 
   const onDropFacade = (e: React.DragEvent) => {
     e.preventDefault();
     setDragFacade(false);
     const file = e.dataTransfer.files[0];
-    if (file) readFacadeFile(file);
-  };
-
-  const onDropColor = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragColor(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleColorFile(file);
+    if (file) handleFacadeFile(file);
   };
 
   // ── Color selection & recoloring ──────────────────────────────────────────
@@ -407,8 +339,7 @@ export default function Home() {
   const runRecolor = async (
     color: Color,
     image: string,
-    onErrorStep: AppStep = 'colors',
-    referenceImage?: string | null
+    onErrorStep: AppStep = 'colors'
   ) => {
     setSelectedColor(color);
     setStep('recoloring');
@@ -437,7 +368,6 @@ export default function Home() {
           colorName: color.fullName,
           colorHex: color.hex,
           colorPrompt: color.recolorPrompt,
-          referenceImage: referenceImage || undefined,
         }),
       });
 
@@ -449,14 +379,8 @@ export default function Home() {
       }
 
       const data = await res.json();
-      // Recadre le résultat au ratio de la photo d'origine (corrige le carré).
-      let finalImage = data.resultUrl;
-      try {
-        finalImage = await matchAspect(data.resultUrl, image);
-      } catch (e) {
-        console.error('Aspect match error:', e);
-      }
-      setResultImage(finalImage);
+      // On utilise l'image du modèle telle quelle (process d'hier qui marchait).
+      setResultImage(data.resultUrl);
       setStep('result');
     } catch (err) {
       clearInterval(interval);
@@ -469,15 +393,10 @@ export default function Home() {
 
   const handleColorSelect = (color: Color) => {
     if (!uploadedImage) return;
-    // On fournit une vignette unie de la couleur comme référence visuelle,
-    // ce qui rend le recoloriage nettement plus fiable.
-    const swatch = makeSolidSwatch(color.hex);
-    runRecolor(color, uploadedImage, 'colors', swatch);
+    runRecolor(color, uploadedImage, 'colors');
   };
 
-  // ── Collage global (Ctrl+V) sur l'écran de préparation ────────────────────
-  // Si aucune façade n'est encore présente → la photo va dans la façade,
-  // sinon elle va dans la teinte.
+  // ── Collage global (Ctrl+V) sur l'écran d'upload ──────────────────────────
 
   useEffect(() => {
     if (step !== 'upload') return;
@@ -487,10 +406,7 @@ export default function Home() {
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.startsWith('image/')) {
           const file = items[i].getAsFile();
-          if (file) {
-            if (!uploadedImage) readFacadeFile(file);
-            else handleColorFile(file);
-          }
+          if (file) handleFacadeFile(file);
           break;
         }
       }
@@ -498,7 +414,7 @@ export default function Home() {
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, uploadedImage]);
+  }, [step]);
 
   // ── Génération du watermark dès que le résultat est prêt ───────────────────
 
@@ -569,8 +485,6 @@ export default function Home() {
   const handleReset = () => {
     setStep('upload');
     setUploadedImage(null);
-    setUserColorImage(null);
-    setUserColor(null);
     setColors([]);
     setSelectedColor(null);
     setResultImage(null);
@@ -614,9 +528,8 @@ export default function Home() {
             <h1 className="text-3xl md:text-4xl font-bold text-gray-900 tracking-tight text-balance">
               Visualisez votre façade<br className="hidden md:block" /> en couleur
             </h1>
-            <p className="text-gray-500 text-base md:text-lg max-w-lg mx-auto text-balance">
-              Uploadez une photo de votre maison — et votre teinte si vous en avez une.
-              Sinon, laissez l&apos;IA vous proposer 4 teintes adaptées à votre façade.
+            <p className="text-gray-500 text-base md:text-lg max-w-md mx-auto text-balance">
+              Uploadez une photo de votre maison et découvrez 4 teintes adaptées à votre façade.
             </p>
           </div>
         )}
@@ -631,10 +544,16 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── STEP: Upload — préparation (2 zones + actions) ── */}
+        {/* ── STEP: Upload (zone unique) ── */}
         {step === 'upload' && (
-          <div className="animate-fade-in space-y-6">
-            {/* Inputs fichiers cachés */}
+          <div
+            className={`relative border-2 border-dashed rounded-2xl transition-all duration-200 cursor-pointer animate-fade-in
+              ${dragFacade ? 'border-gray-900 bg-gray-50 scale-[1.01]' : 'border-gray-300 bg-white hover:border-gray-400 hover:bg-gray-50'}`}
+            onDrop={onDropFacade}
+            onDragOver={(e) => { e.preventDefault(); setDragFacade(true); }}
+            onDragLeave={() => setDragFacade(false)}
+            onClick={() => fileInputRef.current?.click()}
+          >
             <input
               ref={fileInputRef}
               type="file"
@@ -642,186 +561,34 @@ export default function Home() {
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) readFacadeFile(file);
+                if (file) handleFacadeFile(file);
                 e.target.value = '';
               }}
             />
-            <input
-              ref={colorInputRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) handleColorFile(file);
-                e.target.value = '';
-              }}
-            />
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* ── Zone façade (obligatoire) ── */}
-              <div
-                className={`relative border-2 border-dashed rounded-2xl transition-all duration-200 cursor-pointer min-h-[260px] flex
-                  ${dragFacade ? 'border-gray-900 bg-gray-50 scale-[1.01]' : 'border-gray-300 bg-white hover:border-gray-400 hover:bg-gray-50'}`}
-                onDrop={onDropFacade}
-                onDragOver={(e) => { e.preventDefault(); setDragFacade(true); }}
-                onDragLeave={() => setDragFacade(false)}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {uploadedImage ? (
-                  <div className="w-full p-3 flex flex-col" onClick={(e) => e.stopPropagation()}>
-                    <div className="relative rounded-xl overflow-hidden flex-1 min-h-[180px]">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={uploadedImage} alt="Façade" className="absolute inset-0 w-full h-full object-cover" />
-                    </div>
-                    <div className="flex items-center justify-between pt-3">
-                      <span className="text-sm font-medium text-gray-700">📷 Photo de façade</span>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          className="text-xs text-gray-500 hover:text-gray-900 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors"
-                        >
-                          Remplacer
-                        </button>
-                        <button
-                          onClick={clearFacade}
-                          className="text-xs text-gray-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors"
-                        >
-                          Retirer
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-center px-6 py-8 w-full space-y-3">
-                    <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center">
-                      <UploadIcon />
-                    </div>
-                    <div className="space-y-0.5">
-                      <p className="font-semibold text-gray-900">Photo de façade</p>
-                      <p className="text-xs text-gray-400">Glissez-déposez, choisissez ou collez • JPG, PNG, WebP</p>
-                    </div>
-                    <div className="flex gap-2 pt-1">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
-                        className="bg-gray-900 text-white px-4 py-2 rounded-full text-xs font-medium hover:bg-gray-700 transition-colors"
-                      >
-                        Choisir
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); pasteInto('facade'); }}
-                        className="bg-white border border-gray-200 text-gray-600 px-4 py-2 rounded-full text-xs font-medium hover:bg-gray-50 transition-colors"
-                      >
-                        Coller
-                      </button>
-                    </div>
-                  </div>
-                )}
+            <div className="flex flex-col items-center justify-center py-16 md:py-24 px-8 text-center space-y-4">
+              <div className="w-20 h-20 bg-gray-100 rounded-2xl flex items-center justify-center">
+                <UploadIcon />
               </div>
-
-              {/* ── Zone teinte (optionnelle) ── */}
-              <div
-                className={`relative border-2 border-dashed rounded-2xl transition-all duration-200 cursor-pointer min-h-[260px] flex
-                  ${dragColor ? 'border-gray-900 bg-gray-50 scale-[1.01]' : 'border-gray-300 bg-white hover:border-gray-400 hover:bg-gray-50'}`}
-                onDrop={onDropColor}
-                onDragOver={(e) => { e.preventDefault(); setDragColor(true); }}
-                onDragLeave={() => setDragColor(false)}
-                onClick={() => colorInputRef.current?.click()}
-              >
-                {userColor ? (
-                  <div className="w-full p-3 flex flex-col" onClick={(e) => e.stopPropagation()}>
-                    <div className="relative rounded-xl overflow-hidden flex-1 min-h-[180px] flex items-center justify-center" style={{ backgroundColor: userColor.hex }}>
-                      {userColorImage && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={userColorImage} alt="Teinte" className="max-h-full max-w-full object-contain" />
-                      )}
-                    </div>
-                    <div className="flex items-center justify-between pt-3">
-                      <span className="text-sm font-medium text-gray-700">🎨 Votre teinte <span className="font-mono text-xs text-gray-400">{userColor.hex}</span></span>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => colorInputRef.current?.click()}
-                          className="text-xs text-gray-500 hover:text-gray-900 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors"
-                        >
-                          Remplacer
-                        </button>
-                        <button
-                          onClick={clearUserColor}
-                          className="text-xs text-gray-500 hover:text-red-600 px-2 py-1 rounded-lg hover:bg-gray-100 transition-colors"
-                        >
-                          Retirer
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-center px-6 py-8 w-full space-y-3">
-                    <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center">
-                      <svg className="h-7 w-7 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
-                      </svg>
-                    </div>
-                    <div className="space-y-0.5">
-                      <p className="font-semibold text-gray-900">Votre teinte <span className="text-gray-400 font-normal">(optionnel)</span></p>
-                      <p className="text-xs text-gray-400">Glissez-déposez, choisissez ou collez une couleur</p>
-                    </div>
-                    <div className="flex gap-2 pt-1">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); colorInputRef.current?.click(); }}
-                        className="bg-gray-900 text-white px-4 py-2 rounded-full text-xs font-medium hover:bg-gray-700 transition-colors"
-                      >
-                        Choisir
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); pasteInto('color'); }}
-                        className="bg-white border border-gray-200 text-gray-600 px-4 py-2 rounded-full text-xs font-medium hover:bg-gray-50 transition-colors"
-                      >
-                        Coller
-                      </button>
-                    </div>
-                  </div>
-                )}
+              <div className="space-y-1">
+                <p className="font-semibold text-gray-900 text-lg">
+                  {dragFacade ? 'Déposez votre photo ici' : 'Uploader une photo de façade'}
+                </p>
+                <p className="text-gray-400 text-sm">Glissez-déposez, choisissez ou collez • JPG, PNG, WebP (max 20 Mo)</p>
               </div>
-            </div>
-
-            {/* ── Boutons d'action (adaptatifs) ── */}
-            <div className="space-y-3">
-              {!uploadedImage && (
+              <div className="flex gap-2 pt-1">
                 <button
-                  disabled
-                  className="w-full bg-gray-200 text-gray-400 py-4 rounded-xl font-medium cursor-not-allowed"
+                  className="bg-gray-900 text-white px-6 py-2.5 rounded-full text-sm font-medium hover:bg-gray-700 transition-colors shadow-sm"
+                  onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                 >
-                  Ajoutez une photo de façade pour continuer
+                  Choisir une photo
                 </button>
-              )}
-
-              {uploadedImage && userColor && (
-                <>
-                  <button
-                    onClick={proceedWithColor}
-                    className="w-full bg-gray-900 text-white py-4 rounded-xl font-semibold hover:bg-gray-800 transition-colors shadow-sm"
-                  >
-                    Coloriser avec ma teinte
-                  </button>
-                  <div className="text-center">
-                    <button
-                      onClick={proceedWithPresets}
-                      className="text-sm text-gray-500 hover:text-gray-900 underline-offset-2 hover:underline transition-colors"
-                    >
-                      ou choisir parmi 4 teintes proposées
-                    </button>
-                  </div>
-                </>
-              )}
-
-              {uploadedImage && !userColor && (
                 <button
-                  onClick={proceedWithPresets}
-                  className="w-full bg-gray-900 text-white py-4 rounded-xl font-semibold hover:bg-gray-800 transition-colors shadow-sm"
+                  className="bg-white border border-gray-200 text-gray-600 px-6 py-2.5 rounded-full text-sm font-medium hover:bg-gray-50 transition-colors"
+                  onClick={(e) => { e.stopPropagation(); pasteFacade(); }}
                 >
-                  Voir les 4 teintes proposées
+                  Coller
                 </button>
-              )}
+              </div>
             </div>
           </div>
         )}
