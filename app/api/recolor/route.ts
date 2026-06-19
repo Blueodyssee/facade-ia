@@ -4,7 +4,7 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    const { image, colorName, colorHex, colorPrompt } = await req.json();
+    const { image, swatch, colorName, colorHex, colorPrompt } = await req.json();
 
     if (!image || !colorName) {
       return NextResponse.json({ error: 'Missing image or color data' }, { status: 400 });
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'OPENROUTER_API_KEY not configured' }, { status: 500 });
     }
 
-    const prompt = `Change ONLY the exterior wall/facade color of this house to ${colorName} — ${colorPrompt} (target color hex ${colorHex}). The wall paint color must become exactly this color. Keep absolutely everything else completely identical and unchanged: the exact same architecture, windows, doors, shutters, roof, chimney, vegetation, sky, ground, shadows, highlights, lighting direction, texture, materials and details. Photorealistic result, maintain the exact same perspective, framing and composition. Do not add or remove any object.`;
+    const prompt = `You are given two images. The FIRST is a photo of a house/building. The SECOND is a solid color swatch showing the EXACT target wall paint color: ${colorPrompt} (color "${colorName}", hex ${colorHex}). FULLY repaint ALL the exterior facade walls of the building in the first image so they CLEARLY and OBVIOUSLY become exactly that color — a strong, unmistakable repaint, NOT a faint tint or subtle wash. Keep absolutely everything else completely identical and unchanged: the same architecture, windows, doors, shutters, roof, signs, chimney, vegetation, sky, ground, shadows, lighting direction and framing. Do NOT zoom, do NOT crop, keep the same composition. The image may contain neutral grey bands on the edges; leave them exactly as they are.`;
 
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
             role: 'user',
             content: [
               { type: 'image_url', image_url: { url: image } },
+              ...(swatch ? [{ type: 'image_url', image_url: { url: swatch } }] : []),
               { type: 'text', text: prompt },
             ],
           },

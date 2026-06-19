@@ -2,43 +2,31 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const maxDuration = 30;
 
+// Les 10 teintes du nuancier (rangées du plus clair au plus foncé).
+// Le hex est mesuré directement sur les échantillons du dossier /couleurs.
+// `recolorPrompt` = courte description anglaise de la couleur, INVISIBLE côté client,
+// envoyée à l'IA de recoloriage. Indispensable à la fidélité couleur (testé le 19/06/2026).
 const COLORS = [
-  {
-    id: 'G00',
-    name: 'Naturel',
-    fullName: 'G00 Naturel',
-    hex: '#F0EEE8',
-    ncs: '0502-Y50R',
-    lrv: '0.24',
-    recolorPrompt: 'very light warm off-white, almost white with barely visible warm undertones, like natural linen',
-  },
-  {
-    id: 'R93',
-    name: 'Brique Chaud',
-    fullName: 'R93 Brique Chaud',
-    hex: '#C46248',
-    ncs: '4040-Y80R',
-    lrv: '0.68',
-    recolorPrompt: 'warm terracotta brick red, earthy and rich, like traditional fired clay bricks',
-  },
-  {
-    id: 'G50',
-    name: 'Gris Cendre',
-    fullName: 'G50 Gris Cendre',
-    hex: '#D3D6D1',
-    ncs: '',
-    lrv: '',
-    recolorPrompt: 'light cool ash grey, soft and neutral, like weathered natural stone',
-  },
-  {
-    id: 'J40',
-    name: 'Sable Jaune',
-    fullName: 'J40 Sable Jaune',
-    hex: '#ECE3C8',
-    ncs: '',
-    lrv: '',
-    recolorPrompt: 'pale warm sandy cream yellow, soft and light, like natural fine sand',
-  },
+  { id: 'G10',  name: 'Blanc Lumière',   fullName: 'G10 Blanc Lumière',   hex: '#F6F5F3',
+    recolorPrompt: 'a bright clean white, very light and crisp, like fresh white paint' },
+  { id: '320',  name: 'Blanc Cassé',     fullName: '320 Blanc Cassé',     hex: '#E2DCD4',
+    recolorPrompt: 'a warm off-white cream, soft and light' },
+  { id: 'J50',  name: 'Jaune Paille',    fullName: 'J50 Jaune Paille',    hex: '#F0CD75',
+    recolorPrompt: 'a warm straw yellow, golden and sunny' },
+  { id: 'T20',  name: 'Sable Clair',     fullName: 'T20 Sable Clair',     hex: '#DCBE98',
+    recolorPrompt: 'a light sandy beige, warm and soft' },
+  { id: '190',  name: 'Beige',           fullName: '190 Beige',           hex: '#D6BB9E',
+    recolorPrompt: 'a natural warm beige, a soft tan tone' },
+  { id: 'G37',  name: 'Sable Rosé',      fullName: 'G37 Sable Rosé',      hex: '#D8B4A1',
+    recolorPrompt: 'a soft pinkish rosy beige, a sandy pink tone' },
+  { id: 'G16',  name: 'Gris Nuage',      fullName: 'G16 Gris Nuage',      hex: '#BAB8B5',
+    recolorPrompt: 'a light neutral cloud grey, soft and slightly cool' },
+  { id: 'V59',  name: 'Vert Sauge',      fullName: 'V59 Vert Sauge',      hex: '#ACB28E',
+    recolorPrompt: 'a soft muted sage green, a greyish dusty green like dried sage leaves' },
+  { id: 'R80',  name: 'Terre de Sienne', fullName: 'R80 Terre de Sienne', hex: '#BB633D',
+    recolorPrompt: 'a warm terracotta sienna, an earthy brick orange-red' },
+  { id: '0147', name: 'Brun Doux',       fullName: '0147 Brun Doux',      hex: '#A46B3F',
+    recolorPrompt: 'a warm soft brown, a caramel earthy brown tone' },
 ];
 
 export async function POST(req: NextRequest) {

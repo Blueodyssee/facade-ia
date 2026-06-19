@@ -10,8 +10,6 @@ type Color = {
   name: string;
   fullName: string;
   hex: string;
-  ncs: string;
-  lrv: string;
   recolorPrompt: string;
   reason: string;
 };
@@ -46,6 +44,73 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onload = (e) => resolve(e.target!.result as string);
     reader.onerror = reject;
     reader.readAsDataURL(file);
+  });
+}
+
+// Vignette unie de la couleur cible, envoyée à l'IA comme 2ᵉ image
+// (le modèle "lit" beaucoup mieux une image de couleur qu'un code hex).
+function makeColorSwatch(hex: string, size = 512): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = hex;
+  ctx.fillRect(0, 0, size, size);
+  return canvas.toDataURL('image/png');
+}
+
+// Letterbox : transforme la photo en carré avec des bandes grises neutres, et renvoie
+// la zone (en fractions 0→1) où se trouve la vraie photo, pour la recadrer après.
+function padToSquare(
+  dataUrl: string,
+  bandColor = '#9aa0a6'
+): Promise<{ square: string; region: { x: number; y: number; w: number; h: number } }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.width;
+      const h = img.height;
+      const s = Math.max(w, h);
+      const canvas = document.createElement('canvas');
+      canvas.width = s;
+      canvas.height = s;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = bandColor;
+      ctx.fillRect(0, 0, s, s);
+      const x = Math.round((s - w) / 2);
+      const y = Math.round((s - h) / 2);
+      ctx.drawImage(img, x, y, w, h);
+      resolve({
+        square: canvas.toDataURL('image/jpeg', 0.92),
+        region: { x: x / s, y: y / s, w: w / s, h: h / s },
+      });
+    };
+    img.src = dataUrl;
+  });
+}
+
+// Recadre l'image carrée renvoyée par l'IA sur la zone d'origine (retire les bandes).
+function cropToRegion(
+  dataUrl: string,
+  region: { x: number; y: number; w: number; h: number }
+): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const W = img.width;
+      const H = img.height;
+      const sx = Math.round(region.x * W);
+      const sy = Math.round(region.y * H);
+      const sw = Math.round(region.w * W);
+      const sh = Math.round(region.h * H);
+      const canvas = document.createElement('canvas');
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext('2d')!;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
+    };
+    img.src = dataUrl;
   });
 }
 
@@ -140,7 +205,6 @@ function ColorCard({ color, onSelect }: { color: Color; onSelect: () => void }) 
             style={{ backgroundColor: color.hex }}
           />
         </div>
-        <p className="text-xs text-gray-400 font-mono">{color.ncs}</p>
         {color.reason && (
           <p className="text-sm text-gray-600 leading-relaxed pt-1 border-t border-gray-50">
             {color.reason}
@@ -255,11 +319,17 @@ export default function Home() {
     }, 4000);
 
     try {
+      // Vignette de la couleur cible (l'IA lit mieux une image qu'un code hex).
+      const swatch = makeColorSwatch(color.hex);
+      // Letterbox : photo en carré (bandes neutres) pour que le modèle ne rogne pas les côtés.
+      const { square, region } = await padToSquare(image);
+
       const res = await fetch('/api/recolor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image,
+          image: square,
+          swatch,
           colorName: color.fullName,
           colorHex: color.hex,
           colorPrompt: color.recolorPrompt,
@@ -274,8 +344,14 @@ export default function Home() {
       }
 
       const data = await res.json();
-      // On utilise l'image du modèle telle quelle (process d'hier qui marchait).
-      setResultImage(data.resultUrl);
+      // Le modèle renvoie un carré : on retire les bandes pour retrouver le cadrage d'origine.
+      let finalUrl: string = data.resultUrl;
+      try {
+        finalUrl = await cropToRegion(data.resultUrl, region);
+      } catch (e) {
+        console.error('Recadrage post-IA échoué, image conservée telle quelle:', e);
+      }
+      setResultImage(finalUrl);
       setStep('result');
       return true;
     } catch (err) {
@@ -439,7 +515,7 @@ export default function Home() {
               Visualisez votre façade<br className="hidden md:block" /> en couleur
             </h1>
             <p className="text-gray-500 text-base md:text-lg max-w-md mx-auto text-balance">
-              Uploadez une photo de votre maison et découvrez 4 teintes adaptées à votre façade.
+              Uploadez une photo de votre maison et découvrez 10 teintes adaptées à votre façade.
             </p>
           </div>
         )}
@@ -511,7 +587,8 @@ export default function Home() {
                 <SpinnerIcon />
                 <p className="text-gray-700 font-medium">{loadingMessage}</p>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-5">
+                <ColorCardSkeleton />
                 <ColorCardSkeleton />
                 <ColorCardSkeleton />
               </div>
@@ -539,7 +616,7 @@ export default function Home() {
 
             <div>
               <h2 className="text-xl font-bold text-gray-900 mb-6">Sélectionnez une couleur pour simuler le rendu sur votre façade</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+              <div className="grid grid-cols-2 lg:grid-cols-3 gap-5">
                 {colors.map((color) => (
                   <ColorCard
                     key={color.id}
@@ -619,7 +696,7 @@ export default function Home() {
             <div>
               <h2 className="text-xl font-bold text-gray-900 mb-1">Avant / Après</h2>
               <p className="text-sm text-gray-500 mb-5">
-                Façade avec la couleur <strong>{selectedColor.fullName}</strong> — {selectedColor.ncs}
+                Façade avec la couleur <strong>{selectedColor.fullName}</strong>
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -672,7 +749,6 @@ export default function Home() {
               />
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-gray-900">{selectedColor.fullName}</p>
-                <p className="text-sm text-gray-500 font-mono">{selectedColor.ncs}</p>
                 <p className="text-sm text-gray-600 mt-1">{selectedColor.reason}</p>
               </div>
             </div>
