@@ -1,7 +1,13 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { createWatermarkedImage, generateFacadePDF, fileTimestamp } from './lib/export';
+import {
+  createWatermarkedImage,
+  generateFacadePDF,
+  fileTimestamp,
+  shareFacadeImage,
+  canShareFiles,
+} from './lib/export';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -10,7 +16,6 @@ type Color = {
   name: string;
   fullName: string;
   hex: string;
-  recolorPrompt: string;
   reason: string;
 };
 
@@ -19,7 +24,7 @@ type AppStep = 'upload' | 'analyzing' | 'colors' | 'recoloring' | 'result';
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 async function compressImage(dataUrl: string, maxPx = 1280, quality = 0.88): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
       let { width, height } = img;
@@ -34,6 +39,7 @@ async function compressImage(dataUrl: string, maxPx = 1280, quality = 0.88): Pro
       canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
       resolve(canvas.toDataURL('image/jpeg', quality));
     };
+    img.onerror = () => reject(new Error('Impossible de lire l\'image'));
     img.src = dataUrl;
   });
 }
@@ -47,9 +53,20 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-// Vignette unie de la couleur cible, envoyée à l'IA comme 2ᵉ image
-// (le modèle "lit" beaucoup mieux une image de couleur qu'un code hex).
-function makeColorSwatch(hex: string, size = 512): string {
+/** Message d'erreur lisible à partir d'une réponse API. */
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  try {
+    const data = await res.json();
+    if (data?.error && typeof data.error === 'string') return data.error;
+    if (data?.message && typeof data.message === 'string') return data.message;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+// Vignette unie de la couleur cible (2ᵉ image pour l'IA). 128px suffit.
+function makeColorSwatch(hex: string, size = 128): string {
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
@@ -149,6 +166,14 @@ function PdfIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+    </svg>
+  );
+}
+
 function UploadIcon() {
   return (
     <svg className="h-10 w-10 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -175,11 +200,21 @@ function ColorCardSkeleton() {
 
 // ─── Color Card ───────────────────────────────────────────────────────────────
 
-function ColorCard({ color, onSelect }: { color: Color; onSelect: () => void }) {
+function ColorCard({
+  color,
+  onSelect,
+  disabled,
+}: {
+  color: Color;
+  onSelect: () => void;
+  disabled?: boolean;
+}) {
   return (
     <button
+      type="button"
       onClick={onSelect}
-      className="group text-left rounded-2xl overflow-hidden bg-white shadow-sm border border-gray-100 hover:shadow-lg hover:border-gray-200 hover:-translate-y-1 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2"
+      disabled={disabled}
+      className="group text-left rounded-2xl overflow-hidden bg-white shadow-sm border border-gray-100 hover:shadow-lg hover:border-gray-200 hover:-translate-y-1 transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 disabled:opacity-60 disabled:pointer-events-none disabled:hover:translate-y-0"
     >
       {/* Color swatch */}
       <div
@@ -225,12 +260,17 @@ export default function Home() {
   const [resultImage, setResultImage] = useState<string | null>(null);
   const [watermarkedImage, setWatermarkedImage] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareHint, setShareHint] = useState<string | null>(null);
+  const [canShare, setCanShare] = useState(false);
   const [dragFacade, setDragFacade] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recolorAbortRef = useRef<AbortController | null>(null);
 
   // ── Compteur de simulations (chargé au démarrage) ──────────────────────────
 
@@ -241,9 +281,22 @@ export default function Home() {
       .catch((e) => console.error('Counter load error:', e));
   }, []);
 
+  // Partage natif (WhatsApp etc.) — disponible surtout sur mobile
+  useEffect(() => {
+    setCanShare(canShareFiles());
+  }, []);
+
+  // Cleanup si on quitte la page pendant un recolor
+  useEffect(() => {
+    return () => {
+      recolorAbortRef.current?.abort();
+    };
+  }, []);
+
   // ── Photo de façade : lecture + analyse directe ───────────────────────────
 
   const handleFacadeFile = async (file: File) => {
+    if (busy) return;
     if (!file.type.startsWith('image/')) {
       setError('La photo de façade doit être une image (JPG, PNG, WebP).');
       return;
@@ -253,6 +306,7 @@ export default function Home() {
       return;
     }
     setError(null);
+    setBusy(true);
     try {
       const raw = await readFileAsDataUrl(file);
       const compressed = await compressImage(raw);
@@ -265,7 +319,9 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: compressed }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        throw new Error(await readApiError(res, 'L\'analyse a échoué. Réessayez.'));
+      }
       const data = await res.json();
 
       if (!data.isValidFacade) {
@@ -278,9 +334,12 @@ export default function Home() {
       setStep('colors');
     } catch (err) {
       console.error(err);
-      setError('Une erreur est survenue lors de l\'analyse. Vérifiez votre clé OPENROUTER_API_KEY.');
+      const msg = err instanceof Error ? err.message : 'Une erreur est survenue lors de l\'analyse.';
+      setError(msg);
       setStep('upload');
       setUploadedImage(null);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -305,23 +364,28 @@ export default function Home() {
     setError(null);
     setWatermarkedImage(null);
 
+    // Messages « mode visite » : le façadier peut parler du devis pendant l'attente
     const messages = [
       `Application de ${color.name}…`,
-      `L'IA retravaille votre façade…`,
-      `Peaufinage des détails…`,
-      `Presque terminé…`,
+      'Pendant ce temps, vous pouvez parler du devis…',
+      'L’IA peaufine le rendu avant/après…',
+      'Presque prêt — environ 1 minute au total…',
     ];
     let msgIdx = 0;
     setLoadingMessage(messages[0]);
     const interval = setInterval(() => {
       msgIdx = (msgIdx + 1) % messages.length;
       setLoadingMessage(messages[msgIdx]);
-    }, 4000);
+    }, 4500);
+
+    recolorAbortRef.current?.abort();
+    const abort = new AbortController();
+    recolorAbortRef.current = abort;
+    // Timeout client (le modèle premium peut prendre ~1–2 min)
+    const timeoutId = setTimeout(() => abort.abort(), 150_000);
 
     try {
-      // Vignette de la couleur cible (l'IA lit mieux une image qu'un code hex).
       const swatch = makeColorSwatch(color.hex);
-      // Letterbox : photo en carré (bandes neutres) pour que le modèle ne rogne pas les côtés.
       const { square, region } = await padToSquare(image);
 
       const res = await fetch('/api/recolor', {
@@ -330,21 +394,20 @@ export default function Home() {
         body: JSON.stringify({
           image: square,
           swatch,
+          colorId: color.id,
           colorName: color.fullName,
           colorHex: color.hex,
-          colorPrompt: color.recolorPrompt,
         }),
+        signal: abort.signal,
       });
 
-      clearInterval(interval);
-
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Recoloring failed');
+        throw new Error(
+          await readApiError(res, 'Le recoloriage a échoué. Réessayez.')
+        );
       }
 
       const data = await res.json();
-      // Le modèle renvoie un carré : on retire les bandes pour retrouver le cadrage d'origine.
       let finalUrl: string = data.resultUrl;
       try {
         finalUrl = await cropToRegion(data.resultUrl, region);
@@ -355,23 +418,34 @@ export default function Home() {
       setStep('result');
       return true;
     } catch (err) {
-      clearInterval(interval);
       console.error(err);
-      setError('Erreur lors du recoloriage. Vérifiez votre clé OPENROUTER_API_KEY.');
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setError('Le recoloriage a pris trop de temps. Réessayez.');
+      } else {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : 'Erreur lors du recoloriage. Réessayez.';
+        setError(msg);
+      }
       setStep(onErrorStep);
       setSelectedColor(null);
       return false;
+    } finally {
+      clearInterval(interval);
+      clearTimeout(timeoutId);
     }
   };
 
   const handleColorSelect = async (color: Color) => {
-    if (!uploadedImage) return;
+    if (!uploadedImage || busy) return;
 
-    // Compteur : on bloque s'il ne reste plus de simulations.
     if (remaining !== null && remaining <= 0) {
       setError('Plus de simulations disponibles pour le moment.');
       return;
     }
+
+    setBusy(true);
 
     // On réserve une simulation (décrément global).
     try {
@@ -384,6 +458,7 @@ export default function Home() {
       setRemaining(d.remaining);
       if (d.blocked) {
         setError('Plus de simulations disponibles pour le moment.');
+        setBusy(false);
         return;
       }
     } catch (e) {
@@ -393,7 +468,6 @@ export default function Home() {
 
     const ok = await runRecolor(color, uploadedImage, 'colors');
 
-    // Si la colorisation a échoué, on rembourse la simulation réservée.
     if (!ok) {
       try {
         const r = await fetch('/api/counter', {
@@ -407,6 +481,8 @@ export default function Home() {
         console.error('Counter refund error:', e);
       }
     }
+
+    setBusy(false);
   };
 
   // ── Génération du watermark dès que le résultat est prêt ───────────────────
@@ -428,6 +504,42 @@ export default function Home() {
     a.href = img;
     a.download = `gooweb_facade_${fileTimestamp()}.jpg`;
     a.click();
+  };
+
+  // ── Partage natif (WhatsApp, Messages, Mail…) ─────────────────────────────
+
+  const handleShare = async () => {
+    if (!resultImage || !selectedColor) return;
+    setShareLoading(true);
+    setShareHint(null);
+    setError(null);
+    try {
+      const watermarked =
+        watermarkedImage || (await createWatermarkedImage(resultImage));
+      if (!watermarkedImage) setWatermarkedImage(watermarked);
+
+      const outcome = await shareFacadeImage({
+        imageDataUrl: watermarked,
+        colorName: selectedColor.fullName,
+      });
+
+      if (outcome === 'unsupported') {
+        setShareHint(
+          'Partage non disponible ici. Téléchargez l’image puis envoyez-la via WhatsApp ou mail.'
+        );
+        handleDownload();
+      } else if (outcome === 'shared') {
+        setShareHint('Envoyé via le menu de partage de votre téléphone.');
+      }
+      // cancelled → rien
+    } catch (e) {
+      console.error('Share error:', e);
+      setShareHint(
+        'Impossible de partager automatiquement. Téléchargez l’image puis envoyez-la au client.'
+      );
+    } finally {
+      setShareLoading(false);
+    }
   };
 
   // ── Génération du PDF avant/après ──────────────────────────────────────────
@@ -454,6 +566,8 @@ export default function Home() {
   // ── Reset ─────────────────────────────────────────────────────────────────
 
   const handleReset = () => {
+    recolorAbortRef.current?.abort();
+    setBusy(false);
     setStep('upload');
     setUploadedImage(null);
     setColors([]);
@@ -464,22 +578,32 @@ export default function Home() {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  /** Texte lisible sur fond de teinte claire. */
+  const isLightHex = (hex: string) => {
+    const m = hex.replace('#', '');
+    if (m.length < 6) return true;
+    const r = parseInt(m.slice(0, 2), 16);
+    const g = parseInt(m.slice(2, 4), 16);
+    const b = parseInt(m.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 > 160;
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col pb-safe">
       {/* Header */}
-      <header className="sticky top-0 z-40 bg-[#F7F6F3]/80 backdrop-blur-md border-b border-gray-200/60">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+      <header className="sticky top-0 z-40 bg-[#F7F6F3]/80 backdrop-blur-md border-b border-gray-200/60 pt-safe">
+        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/logo-gooweb.png" alt="Gooweb" className="h-7 w-auto" />
-            <span className="font-semibold text-gray-900 tracking-tight">Gooweb Color</span>
+            <img src="/logo-gooweb.png" alt="Gooweb" className="h-7 w-auto flex-shrink-0" />
+            <span className="font-semibold text-gray-900 tracking-tight truncate">Gooweb Color</span>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
             {remaining !== null && (
               <span
-                className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                className={`text-xs font-medium px-2 py-1 sm:px-2.5 rounded-full whitespace-nowrap ${
                   remaining <= 0
                     ? 'bg-red-50 text-red-600'
                     : remaining <= 20
@@ -488,25 +612,30 @@ export default function Home() {
                 }`}
                 title="Simulations restantes"
               >
-                {remaining} simulation{remaining > 1 ? 's' : ''}
+                <span className="sm:hidden">{remaining}</span>
+                <span className="hidden sm:inline">
+                  {remaining} simulation{remaining > 1 ? 's' : ''}
+                </span>
               </span>
             )}
             {step !== 'upload' && (
               <button
+                type="button"
                 onClick={handleReset}
-                className="text-sm text-gray-500 hover:text-gray-900 transition-colors flex items-center gap-1.5"
+                className="text-sm text-gray-500 hover:text-gray-900 transition-colors flex items-center gap-1 min-h-[44px] min-w-[44px] sm:min-w-0 justify-center sm:justify-start px-1"
+                aria-label="Recommencer"
               >
-                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                Recommencer
+                <span className="hidden sm:inline">Recommencer</span>
               </button>
             )}
           </div>
         </div>
       </header>
 
-      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-10 md:py-16 space-y-10">
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-8 md:py-16 space-y-8 md:space-y-10">
 
         {/* Hero text — only on upload step */}
         {step === 'upload' && (
@@ -544,6 +673,7 @@ export default function Home() {
               ref={fileInputRef}
               type="file"
               accept="image/*"
+              capture="environment"
               className="hidden"
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -551,21 +681,24 @@ export default function Home() {
                 e.target.value = '';
               }}
             />
-            <div className="flex flex-col items-center justify-center py-16 md:py-24 px-8 text-center space-y-4">
+            <div className="flex flex-col items-center justify-center py-14 md:py-24 px-6 md:px-8 text-center space-y-4">
               <div className="w-20 h-20 bg-gray-100 rounded-2xl flex items-center justify-center">
                 <UploadIcon />
               </div>
               <div className="space-y-1">
                 <p className="font-semibold text-gray-900 text-lg">
-                  {dragFacade ? 'Déposez votre photo ici' : 'Uploader une photo de façade'}
+                  {dragFacade ? 'Déposez votre photo ici' : 'Photo de façade'}
                 </p>
-                <p className="text-gray-400 text-sm">Glissez-déposez ou cliquez pour choisir • JPG, PNG, WebP (max 20 Mo)</p>
+                <p className="text-gray-400 text-sm">
+                  Caméra ou galerie • JPG, PNG, WebP (max 20 Mo)
+                </p>
               </div>
               <button
-                className="mt-1 bg-gray-900 text-white px-6 py-2.5 rounded-full text-sm font-medium hover:bg-gray-700 transition-colors shadow-sm"
+                type="button"
+                className="mt-1 bg-gray-900 text-white px-6 py-3 min-h-[44px] rounded-full text-sm font-medium hover:bg-gray-700 transition-colors shadow-sm"
                 onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
               >
-                Choisir une photo
+                Prendre / choisir une photo
               </button>
             </div>
           </div>
@@ -621,6 +754,7 @@ export default function Home() {
                   <ColorCard
                     key={color.id}
                     color={color}
+                    disabled={busy}
                     onSelect={() => handleColorSelect(color)}
                   />
                 ))}
@@ -684,7 +818,13 @@ export default function Home() {
                   </div>
                 ))}
               </div>
-              <p className="text-xs text-gray-400 mt-5 text-center">Cette étape peut prendre 30 à 60 secondes</p>
+              {/* Barre indéterminée — l'écran « bouge » pendant l'attente */}
+              <div className="mt-5 h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full w-1/3 bg-gray-900 rounded-full animate-progress-indeterminate" />
+              </div>
+              <p className="text-xs text-gray-400 mt-4 text-center">
+                Environ 1 minute · idéal pour parler du devis avec le client
+              </p>
             </div>
           </div>
         )}
@@ -705,12 +845,12 @@ export default function Home() {
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase tracking-widest text-gray-400">Avant</span>
                   </div>
-                  <div className="rounded-2xl overflow-hidden shadow-sm border border-gray-100 aspect-[4/3]">
+                  <div className="rounded-2xl overflow-hidden shadow-sm border border-gray-100 aspect-[4/3] bg-gray-50">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={uploadedImage}
                       alt="Façade originale"
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                   </div>
                 </div>
@@ -720,18 +860,20 @@ export default function Home() {
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold uppercase tracking-widest text-gray-400">Après</span>
                     <span
-                      className="text-xs font-medium px-2.5 py-1 rounded-full text-white"
-                      style={{ backgroundColor: selectedColor.hex === '#F0EEE8' ? '#999' : selectedColor.hex }}
+                      className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+                        isLightHex(selectedColor.hex) ? 'text-gray-800' : 'text-white'
+                      }`}
+                      style={{ backgroundColor: selectedColor.hex }}
                     >
                       {selectedColor.name}
                     </span>
                   </div>
-                  <div className="rounded-2xl overflow-hidden shadow-sm border border-gray-100 aspect-[4/3] relative">
+                  <div className="rounded-2xl overflow-hidden shadow-sm border border-gray-100 aspect-[4/3] relative bg-gray-50">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={watermarkedImage || resultImage}
                       alt={`Façade avec ${selectedColor.name}`}
-                      className="w-full h-full object-cover"
+                      className="w-full h-full object-contain"
                     />
                   </div>
                 </div>
@@ -741,7 +883,11 @@ export default function Home() {
             {/* Color info card */}
             <div
               className="rounded-2xl p-5 flex items-center gap-4"
-              style={{ backgroundColor: selectedColor.hex === '#F0EEE8' ? '#f5f5f5' : `${selectedColor.hex}22` }}
+              style={{
+                backgroundColor: isLightHex(selectedColor.hex)
+                  ? '#f5f5f5'
+                  : `${selectedColor.hex}22`,
+              }}
             >
               <div
                 className="w-14 h-14 rounded-xl flex-shrink-0 border-2 border-white shadow"
@@ -753,36 +899,67 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Action buttons */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Actions terrain : envoyer d'abord, puis téléchargements */}
+            <div className="space-y-3">
               <button
-                onClick={handleDownload}
-                className="flex items-center justify-center gap-2 bg-gray-900 text-white py-3.5 rounded-xl font-medium hover:bg-gray-800 transition-colors shadow-sm"
+                type="button"
+                onClick={handleShare}
+                disabled={shareLoading}
+                className="w-full flex items-center justify-center gap-2 bg-gray-900 text-white py-3.5 min-h-[48px] rounded-xl font-medium hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
               >
-                <DownloadIcon />
-                Télécharger l&apos;image
+                {shareLoading ? <SpinnerIcon /> : <ShareIcon />}
+                {shareLoading
+                  ? 'Préparation…'
+                  : canShare
+                    ? 'Envoyer au client'
+                    : 'Envoyer au client (partage)'}
               </button>
-              <button
-                onClick={handlePdf}
-                disabled={pdfLoading}
-                className="flex items-center justify-center gap-2 bg-gray-900 text-white py-3.5 rounded-xl font-medium hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
-              >
-                {pdfLoading ? <SpinnerIcon /> : <PdfIcon />}
-                {pdfLoading ? 'Génération…' : 'Télécharger le PDF'}
-              </button>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={handleDownload}
+                  className="flex items-center justify-center gap-2 bg-white text-gray-900 border border-gray-200 py-3.5 min-h-[48px] rounded-xl font-medium hover:bg-gray-50 transition-colors shadow-sm"
+                >
+                  <DownloadIcon />
+                  Télécharger l&apos;image
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePdf}
+                  disabled={pdfLoading}
+                  className="flex items-center justify-center gap-2 bg-white text-gray-900 border border-gray-200 py-3.5 min-h-[48px] rounded-xl font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                >
+                  {pdfLoading ? <SpinnerIcon /> : <PdfIcon />}
+                  {pdfLoading ? 'Génération…' : 'Télécharger le PDF'}
+                </button>
+              </div>
+
+              {shareHint && (
+                <p className="text-sm text-gray-600 text-center bg-white border border-gray-100 rounded-xl px-3 py-2">
+                  {shareHint}
+                </p>
+              )}
+
+              <p className="text-xs text-gray-400 text-center leading-relaxed">
+                Montrez ce rendu au client, puis envoyez-le pour qu’il le garde.
+                Simulation indicative.
+              </p>
             </div>
 
             {/* Try other color — only when preset colors were proposed */}
             {colors.length > 0 && (
               <div className="text-center">
                 <button
+                  type="button"
                   onClick={() => {
                     setStep('colors');
                     setResultImage(null);
                     setWatermarkedImage(null);
                     setSelectedColor(null);
+                    setShareHint(null);
                   }}
-                  className="inline-flex items-center gap-2 text-base font-semibold text-blue-600 hover:text-blue-700 hover:underline underline-offset-4 transition-colors"
+                  className="inline-flex items-center gap-2 text-base font-semibold text-blue-600 hover:text-blue-700 hover:underline underline-offset-4 transition-colors min-h-[44px]"
                 >
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />

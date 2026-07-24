@@ -4,6 +4,18 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Gooweb Color — Visualisez votre façade en couleur',
   description: 'Simulez la couleur de votre façade en quelques secondes grâce à l\'IA',
+  // Aide le navigateur mobile (encoche, barre d’état)
+  other: {
+    'mobile-web-app-capable': 'yes',
+  },
+};
+
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: 'cover' as const,
+  themeColor: '#F7F6F3',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

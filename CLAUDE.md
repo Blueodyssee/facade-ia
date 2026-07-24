@@ -21,7 +21,9 @@ PDF avant/après. Pas de login utilisateur (juste un mot de passe simple).
 - **Next.js 14** (App Router) + **TypeScript** + **Tailwind**.
 - **OpenRouter** pour TOUTE l'IA (une seule clé `OPENROUTER_API_KEY`).
   - Analyse façade : `anthropic/claude-sonnet-4.6` (vision) → `app/api/analyze/route.ts`
-  - Recoloriage : `google/gemini-2.5-flash-image` (= "Nano Banana") → `app/api/recolor/route.ts`
+  - Recoloriage : **qualité d’abord** `google/gemini-3-pro-image-preview`, repli
+    `google/gemini-2.5-flash-image` → `app/api/recolor/route.ts`
+    (override : `RECOLOR_MODEL=...` dans `.env.local`)
 - **jsPDF** + **qrcode** (client) pour le PDF → logique dans `app/lib/export.ts`
 - Déploiement **Vercel** (déploie depuis `main`). Repo : github.com/Blueodyssee/facade-ia
 
@@ -48,40 +50,29 @@ Convention : chaque version = une branche `vN` + un tag `vN.0`. Garder ce schém
 - **Limite connue (état v4 actuel)** : Nano Banana renvoie souvent du carré (1024×1024)
   et peut légèrement recadrer (zoom). Le code v4 actuel reste sur le process simple.
 
-### Process de recoloriage OPTIMISÉ - IMPLÉMENTÉ le 18/06/2026 (process actuel)
-> Codé dans `app/page.tsx` (`makeColorSwatch`, `padToSquare`, `cropToRegion`) +
-> `app/api/recolor/route.ts` (2ᵉ image + prompt FERME utilisant la description courte de
-> la teinte). ⚠️ Testé 19/06/2026 : vignette+letterbox NE SUFFISENT PAS, il faut la
-> description par teinte + un prompt insistant (« FULLY repaint… NOT a faint tint »),
-> sinon l'IA laisse les murs quasi inchangés. Le letterbox AIDE la colorisation (vérifié).
-Objectif : **recoloriage fiable à prix compétitif**. Garder Nano Banana (pas cher) mais
-le rendre fiable avec ces leviers, plutôt que de passer à un modèle premium :
-1. **Modèle pas cher par défaut** : `google/gemini-2.5-flash-image` (~0,04 $/image). Bon
-   sur de vraies photos de façade.
-2. **Couleur en IMAGE, pas juste en hex** : envoyer une **vignette unie** de la couleur
-   cible en 2ᵉ image (+ le nom). Les modèles d'image suivent mal un `#RRGGBB` seul.
-   *(Testé : orange→bleu marche avec vignette, pas en texte seul.)*
-3. **Cadrage préservé = technique « letterbox »** : transformer la photo en **carré**
-   (bandes neutres haut/bas) AVANT l'envoi, puis **retirer les bandes après** (recadrer au
-   ratio d'origine). Le modèle ne rogne plus les côtés. *(Testé : côtés conservés, cadrage
-   fidèle. C'EST la bonne façon de corriger le zoom — pas le matchAspect seul qui, lui,
-   rognait l'image déjà carrée.)*
-4. **Prompt strict** : « change UNIQUEMENT les murs en [couleur], garde tout identique, ne
-   zoome/recadre pas ».
-5. **Escalade premium en secours** (bouton « améliorer » premium `gemini-3-pro-image-preview`) :
-   **ÉCARTÉ par l'utilisateur le 18/06/2026 — NON implémenté.** Idée conservée ici pour mémoire ;
-   les leviers 1 à 4 ci-dessus, eux, SONT codés.
+### Process de recoloriage (état actuel — fidélité)
 
-> Différence clé avec les essais ratés : le zoom venait du **carré non compensé**. Le
-> letterbox (pré-pad carré → dépad après) corrige ça proprement, contrairement au
-> matchAspect seul. La vignette de référence améliore la fidélité couleur, sans coût cadrage.
+> **Historique Git utile** :
+> - **V2** (`c85cc6b`) : `gemini-3-pro-image-preview` + vignette → **excellent rendu**
+> - **V3** (`6dff5aa`) : Nano Banana seul, process simple → OK mais moins fidèle
+> - **V4 a01b357** : Nano Banana + vignette + letterbox + descriptions → recolor **trop clair / partiel**
+> - **Fix 07/2026** : retour modèle **pro en premier** (comme V2) + letterbox + vignette +
+>   prompts anti-lightening + palette serveur (`app/lib/colors.ts`)
 
-### Les 10 teintes (définies dans `app/api/analyze/route.ts`)
+Leviers actifs :
+1. **Modèle qualité par défaut** : `google/gemini-3-pro-image-preview`, repli Flash.
+   Forcer l’éco : `RECOLOR_MODEL=google/gemini-2.5-flash-image`.
+2. **Vignette unie** (2ᵉ image) — le modèle suit mal un hex seul.
+3. **Letterbox** (`padToSquare` → envoi → `cropToRegion`) — préserve le cadrage.
+4. **Prompt strict** : opaque, full coverage, same darkness as swatch, NOT lightened.
+5. **`recolorPrompt` serveur** uniquement (par `colorId`), pas exposé au client.
+
+Les 10 teintes : définies dans `app/lib/colors.ts` (importées par analyze + recolor).
+
+### Les 10 teintes (définies dans `app/lib/colors.ts`)
 Nuancier rangé du plus clair au plus foncé. Hex **mesuré sur les échantillons** du
-dossier `couleurs/` (pas estimé). Chaque teinte porte un `recolorPrompt` = **courte
-description anglaise** (ex. « a soft muted sage green »), **invisible côté client**,
-INDISPENSABLE à la fidélité couleur (testé 19/06/2026 : sans description, l'IA ne
-colorise quasiment pas). Pas de code NCS.
+dossier `couleurs/` (pas estimé). Chaque teinte porte un `recolorPrompt` serveur
+(invisible côté client). Pas de code NCS.
 - G10 Blanc Lumière `#F6F5F3`
 - 320 Blanc Cassé `#E2DCD4`
 - J50 Jaune Paille `#F0CD75`
@@ -122,13 +113,12 @@ dans Settings → Environment Variables (cocher Production + Preview + Developme
 ## Fichiers clés
 
 - `app/page.tsx` — toute l'UI + la logique (upload → analyse → 10 teintes → résultat).
-- `app/api/analyze/route.ts` — vision Claude, renvoie les 10 teintes + raisons.
-- `app/api/recolor/route.ts` — Nano Banana, recolorise (process optimisé : vignette + letterbox).
+- `app/lib/colors.ts` — palette unique (hex + recolorPrompt serveur).
+- `app/api/analyze/route.ts` — vision Claude, renvoie les 10 teintes + raisons (sans prompts).
+- `app/api/recolor/route.ts` — Gemini Image pro (+ repli flash), vignette + letterbox côté client.
 - `app/api/counter/route.ts` — compteur global/local.
-- `app/lib/export.ts` — watermark image + génération PDF (jsPDF) + QR code.
+- `app/lib/export.ts` — watermark + PDF + **partage mobile** (`shareFacadeImage` / Web Share API).
 - `middleware.ts` — mot de passe.
-- `app/api/email/route.ts` — route email (Resend). **Le bouton email est retiré en V4**,
-  la route existe encore mais n'est plus utilisée.
 
 ## Pièges / à savoir
 

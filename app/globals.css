@@ -6,6 +6,10 @@
   * {
     box-sizing: border-box;
   }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
 }
 
 @layer utilities {
@@ -22,6 +26,28 @@
 
   .text-balance {
     text-wrap: balance;
+  }
+
+  /* Encoches iPhone / barres système */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* Barre d'attente indéterminée (recolor) */
+  .animate-progress-indeterminate {
+    animation: progressIndeterminate 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes progressIndeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
   }
 }
 
